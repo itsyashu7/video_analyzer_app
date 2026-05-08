@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>SentryVision Dashboard</title>
+
+    <!-- CSS FIX -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+    <link rel="icon" type="image/x-icon"
+          href="{{ url_for('static', filename='favicon.ico') }}">
+</head>
+
+<body>
+    <div class="container">
+
+        <!-- HEADER -->
+        <header>
+            <div class="header-left">
+                <p class="ai-vision">AI VISION . LIVE</p>
+
+                <h1>Sentry<span>Vision</span></h1>
+
+                <p class="subtitle">
+                    Real-time hazard detection through your camera.
+                    Get instant visual alerts and alarm sounds when danger is detected.
+                </p>
+            </div>
+
+            <nav>
+                <button class="nav-btn active">Detector</button>
+                <button class="nav-btn">Dashboard</button>
+            </nav>
+        </header>
+
+        <!-- LIVE DETECTION -->
+        <section class="live-detector">
+
+            <div class="status-banner status-standby" id="status-box">
+                <div class="status-left">
+
+                    <span class="dot"></span>
+
+                    <div>
+                        <p class="status-label">STANDBY</p>
+                        <h2 id="status-text">Area appears safe</h2>
+                    </div>
+
+                </div>
+
+                <div class="fps-counter">LIVE</div>
+            </div>
+
+            <div class="video-container">
+
+                <img id="live-feed"
+                     src=""
+                     alt="Camera is off"
+                     style="display:none;">
+
+                <div id="live-placeholder" class="placeholder-text">
+                    Camera is off
+                </div>
+
+            </div>
+
+            <div class="controls">
+
+                <button id="live-btn"
+                        class="start-btn"
+                        onclick="toggleLiveCamera()">
+                    Start camera
+                </button>
+
+                <p class="detects-text">
+                    Detects: fire, smoke, knives, scissors, bats and dangerous objects.
+                </p>
+
+            </div>
+
+        </section>
+
+        <div style="height:50px;"></div>
+
+        <!-- VIDEO SCAN -->
+        <section class="video-scan-container">
+
+            <div class="scan-header">
+
+                <div class="scan-title">
+                    <p class="scan-label">VIDEO SCAN</p>
+                    <h2>Upload & analyze a recording</h2>
+                </div>
+
+                <label for="video-upload" class="choose-btn">
+                    Choose video
+                </label>
+
+                <input type="file"
+                       id="video-upload"
+                       hidden
+                       accept="video/*"
+                       onchange="handleUpload(this)">
+
+            </div>
+
+            <div class="scan-body">
+
+                <div class="video-preview">
+
+                    <img id="upload-player"
+                         src=""
+                         style="display:none;">
+
+                    <div id="no-video-msg" class="placeholder-text">
+                        No video selected
+                    </div>
+
+                </div>
+
+                <div class="hazard-card">
+
+                    <p class="card-label">HAZARDS COUNTED</p>
+
+                    <h1 id="hazard-count">0</h1>
+
+                    <p class="hazard-subtext">
+                        Run a scan to see results.
+                    </p>
+
+                </div>
+
+            </div>
+
+            <p class="disclaimer">
+                Detection runs locally with YOLOv8 custom AI model.
+            </p>
+
+            <div class="footer-note">
+                Runs entirely on your system
+            </div>
+
+        </section>
+    </div>
+
+    <!-- ALARM SOUND -->
+    <audio id="alarm-audio">
+        <source src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"
+                type="audio/ogg">
+    </audio>
+
+<script>
+
+let liveActive = false;
+let alarmPlaying = false;
+
+// LIVE CAMERA
+function toggleLiveCamera() {
+
+    const img = document.getElementById('live-feed');
+    const placeholder = document.getElementById('live-placeholder');
+    const btn = document.getElementById('live-btn');
+
+    if (!liveActive) {
+
+        img.src = "{{ url_for('video_feed') }}";
+
+        img.style.display = "block";
+        placeholder.style.display = "none";
+
+        btn.innerText = "Stop camera";
+        btn.style.backgroundColor = "#ff3b3b";
+        btn.style.color = "white";
+
+        liveActive = true;
+
+    } else {
+
+        img.src = "";
+
+        img.style.display = "none";
+        placeholder.style.display = "block";
+
+        btn.innerText = "Start camera";
+        btn.style.backgroundColor = "white";
+        btn.style.color = "black";
+
+        liveActive = false;
+    }
+}
+
+// VIDEO UPLOAD
+function handleUpload(input) {
+
+    if (input.files && input.files[0]) {
+
+        const formData = new FormData();
+
+        formData.append('video', input.files[0]);
+
+        fetch('/upload_video', {
+            method: 'POST',
+            body: formData
+        })
+
+        .then(response => response.text())
+
+        .then(filename => {
+
+            const player = document.getElementById('upload-player');
+            const msg = document.getElementById('no-video-msg');
+            const count = document.getElementById('hazard-count');
+
+            player.src = `/upload_feed/${filename}`;
+
+            player.style.display = "block";
+
+            msg.style.display = "none";
+
+            count.innerText = "...";
+        });
+    }
+}
+
+// DANGER SOUND CHECK
+setInterval(() => {
+
+    fetch('/danger_status')
+        .then(res => res.json())
+        .then(data => {
+
+            const alarm = document.getElementById('alarm-audio');
+
+            if (data.danger) {
+
+                if (!alarmPlaying) {
+                    alarm.play();
+                    alarmPlaying = true;
+                }
+
+            } else {
+
+                alarm.pause();
+                alarm.currentTime = 0;
+
+                alarmPlaying = false;
+            }
+        });
+
+}, 1000);
+
+</script>
+
+</body>
+</html>
