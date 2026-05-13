@@ -3,203 +3,117 @@ import os
 import torch
 import threading
 import winsound
-
+import datetime
 from flask import Flask, render_template, Response, request, jsonify
 from ultralytics import YOLO
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-
 UPLOAD_FOLDER = 'uploads'
-
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# ---------------- DEVICE ----------------
+# Thread management kosam
+stop_event = threading.Event()
+danger_detected = False
+alarm_playing = False
+dangerous_objects = ["fire", "smoke", "knife", "scissors", "baseball bat"]
 
-def get_best_device():
-
-    if torch.cuda.is_available():
-        return "0"
-
-    elif torch.backends.mps.is_available():
-        return "mps"
-
-    return "cpu"
-
-device = get_best_device()
-
-# ---------------- MODEL ----------------
+# Stats setup
+hazard_stats = {
+    "total_hazards": 0,
+    "last_24h": 0,
+    "live_camera_hazards": 0,
+    "video_scans_hazards": 0,
+    "avg_accuracy": 0,
+    "total_conf_sum": 0,
+    "recent_events": []
+}
 
 model = YOLO("best.pt")
 
-danger_detected = False
-
-dangerous_objects = [
-    "fire",
-    "firearm",
-    "smoke",
-    "knife",
-    "scissors",
-    "baseball bat"
-]
-
-# ---------------- ALARM ----------------
-
-alarm_playing = False
-
 def play_alarm():
-
     global alarm_playing
-
-    # Prevent multiple alarms at same time
-    if alarm_playing:
-        return
-
+    if alarm_playing: return
     alarm_playing = True
-
     try:
+        for _ in range(3): winsound.Beep(2500, 500)
+    finally: alarm_playing = False
 
-        # 3 beep alarm
-        for _ in range(3):
-
-            winsound.Beep(2500, 700)
-
-    finally:
-
-        alarm_playing = False
-
-# ---------------- DETECTION ----------------
+def update_stats(label, conf, source_type):
+    global hazard_stats
+    hazard_stats["total_hazards"] += 1
+    if source_type == "LIVE":
+        hazard_stats["live_camera_hazards"] += 1
+    else:
+        hazard_stats["video_scans_hazards"] += 1
+    
+    hazard_stats["total_conf_sum"] += (conf * 100)
+    hazard_stats["avg_accuracy"] = round(hazard_stats["total_conf_sum"] / hazard_stats["total_hazards"], 1)
+    
+    new_event = {
+        "type": label.capitalize(),
+        "source": source_type,
+        "accuracy": f"{round(conf * 100, 1)}%",
+        "time": datetime.datetime.now().strftime("%I:%M:%S %p")
+    }
+    hazard_stats["recent_events"].insert(0, new_event)
+    hazard_stats["recent_events"] = hazard_stats["recent_events"][:10]
 
 def run_detection(source_path):
-
     global danger_detected
-
+    stop_event.clear()
     cap = cv2.VideoCapture(source_path)
+    source_type = "LIVE" if source_path == 0 else "VIDEO"
 
-    while cap.isOpened():
-
+    while cap.isOpened() and not stop_event.is_set():
         success, frame = cap.read()
+        if not success: break
 
-        if not success:
-            break
-
-        results = model.predict(
-            frame,
-            imgsz=640,
-            conf=0.4,
-            device=device,
-            verbose=False
-        )
-
-        danger_detected = False
-
-        # ---------------- CUSTOM DRAWING ----------------
+        results = model.predict(frame, imgsz=640, conf=0.4, verbose=False)
+        current_danger = False
 
         for r in results:
-
             for box in r.boxes:
-
                 cls = int(box.cls[0])
-
                 label = model.names[cls]
-
                 conf = float(box.conf[0])
-
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-
-                # ---------------- DANGEROUS OBJECT ----------------
-
+                
                 if label in dangerous_objects:
+                    current_danger = True
+                    update_stats(label, conf, source_type)
+                    if not alarm_playing:
+                        threading.Thread(target=play_alarm, daemon=True).start()
+                    
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                    cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-                    danger_detected = True
-
-                    # Start alarm thread
-                    threading.Thread(
-                        target=play_alarm,
-                        daemon=True
-                    ).start()
-
-                    color = (0, 0, 255)   # RED
-
-                    text = f"DANGER: {label} {conf:.2f}"
-
-                # ---------------- NORMAL OBJECT ----------------
-
-                else:
-
-                    color = (0, 255, 0)   # GREEN
-
-                    text = f"{label} {conf:.2f}"
-
-                # ---------------- DRAW BOX ----------------
-
-                cv2.rectangle(
-                    frame,
-                    (x1, y1),
-                    (x2, y2),
-                    color,
-                    3
-                )
-
-                # ---------------- DRAW LABEL ----------------
-
-                cv2.putText(
-                    frame,
-                    text,
-                    (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    color,
-                    2
-                )
-
-        annotated_frame = frame
-
-        ret, buffer = cv2.imencode('.jpg', annotated_frame)
-
-        frame_bytes = buffer.tobytes()
-
-        yield (
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n'
-            + frame_bytes +
-            b'\r\n'
-        )
+        danger_detected = current_danger
+        ret, buffer = cv2.imencode('.jpg', frame)
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
     cap.release()
-
-# ---------------- ROUTES ----------------
+    danger_detected = False
 
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
+
+@app.route('/dashboard')
+def dashboard(): return render_template('dashboard.html', stats=hazard_stats)
 
 @app.route('/video_feed')
 def video_feed():
+    return Response(run_detection(0), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-    return Response(
-        run_detection(0),
-        mimetype='multipart/x-mixed-replace; boundary=frame'
-    )
-
-@app.route('/upload_feed/<filename>')
-def upload_feed(filename):
-
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-
-    if not os.path.exists(filepath):
-        return "File not found", 404
-
-    return Response(
-        run_detection(filepath),
-        mimetype='multipart/x-mixed-replace; boundary=frame'
-    )
+@app.route('/stop_camera')
+def stop_camera():
+    stop_event.set()
+    return jsonify({"status": "stopped"})
 
 @app.route('/upload_video', methods=['POST'])
 def upload_video():
-
     if 'video' not in request.files:
         return "No file part", 400
 
@@ -217,20 +131,19 @@ def upload_video():
 
     file.save(filepath)
 
-    return filename
+    # Nuvvu adigina lines tharvatha side panel logs support kosam JSON pampali
+    return jsonify({"filename": filename})
+
+@app.route('/upload_feed/<filename>')
+def upload_feed(filename):
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    return Response(run_detection(filepath), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/api/stats')
+def get_stats(): return jsonify(hazard_stats)
 
 @app.route('/danger_status')
-def danger_status():
-
-    return jsonify({
-        "danger": danger_detected
-    })
-
-# ---------------- MAIN ----------------
+def danger_status(): return jsonify({"danger": danger_detected})
 
 if __name__ == '__main__':
-
-    app.run(
-        debug=True,
-        threaded=True
-    )
+    app.run(debug=True, threaded=True)
