@@ -17,7 +17,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 stop_event = threading.Event()
 danger_detected = False
 alarm_playing = False
-dangerous_objects = ["fire", "smoke", "knife", "scissors", "baseball bat"]
+dangerous_objects = ['fire', 'firearm', 'grenade', 'knife', 'pistol', 'rocket']
 
 # Stats setup
 hazard_stats = {
